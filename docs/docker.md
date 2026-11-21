@@ -42,6 +42,7 @@ kafka (healthy)
 
 | Serviço          | URL / Porta                  | Credenciais           |
 |------------------|------------------------------|-----------------------|
+| Kafka UI         | http://localhost:8082        | —                     |
 | Spark UI         | http://localhost:4040        | —                     |
 | Trino UI         | http://localhost:8080        | —                     |
 | MinIO Console    | http://localhost:9001        | minioadmin / minioadmin |

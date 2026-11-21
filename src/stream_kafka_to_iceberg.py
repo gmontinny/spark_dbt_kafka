@@ -7,21 +7,30 @@ do Kafka e persiste os dados crus em tabelas Iceberg com metadados de ingestão.
 Cada tópico é mapeado para uma tabela Bronze independente com schema explícito,
 garantindo contrato de dados e evitando inferência custosa em produção.
 
+Deserialização Avro (wire format Confluent):
+  O produtor envia [0x00 | schema_id 4B | avro binary]. Os primeiros 5 bytes
+  são o prefixo Confluent e devem ser ignorados antes de chamar from_avro.
+  O schema JSON é lido do Schema Registry via HTTP antes de iniciar os streams.
+
 Uso:
     python src/stream_kafka_to_iceberg.py
 
 Variáveis de ambiente (via .env):
-    SPARK_CONNECT_URL — ex: sc://localhost:15002
-    KAFKA_BROKERS     — ex: kafka:9093
+    SPARK_CONNECT_URL         — ex: sc://localhost:15002
+    KAFKA_BROKERS             — ex: kafka:9093
+    KAFKA_SCHEMA_REGISTRY     — ex: http://schema-registry:8081
 """
 
+import json
 import logging
 import os
 
+import requests
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, from_json
-from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+from pyspark.sql.avro.functions import from_avro
+from pyspark.sql.functions import col, current_timestamp, expr
+from pyspark.sql.types import StringType, StructField, StructType
 
 load_dotenv()
 
@@ -33,6 +42,7 @@ logger = logging.getLogger("SparkStreamingBronze")
 
 SPARK_CONNECT_URL = os.getenv("SPARK_CONNECT_URL", "sc://localhost:15002")
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9093")
+SCHEMA_REGISTRY_URL = os.getenv("KAFKA_SCHEMA_REGISTRY", "http://schema-registry:8081")
 CHECKPOINT_BASE = "s3a://spark-demo/stream-1/checkpoints"
 CATALOG = "spark_catalog"
 BRONZE_DB = "raw_olist_staging"
@@ -154,6 +164,17 @@ TABLE_MAP: dict[str, str] = {
 }
 
 
+def _fetch_avro_schema(topic: str) -> str:
+    """
+    Busca o schema Avro mais recente do subject <topic>-value no Schema Registry.
+    Retorna o schema como string JSON — formato esperado por from_avro.
+    """
+    url = f"{SCHEMA_REGISTRY_URL}/subjects/{topic}-value/versions/latest"
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    return resp.json()["schema"]
+
+
 def get_spark() -> SparkSession:
     return SparkSession.builder.remote(SPARK_CONNECT_URL).getOrCreate()
 
@@ -181,8 +202,15 @@ def _ensure_bronze_table(spark: SparkSession, table: str, schema: StructType) ->
     logger.info("Tabela garantida: %s", full_table)
 
 
-def _start_stream(spark: SparkSession, topic: str, schema: StructType, table: str):
-    """Inicia um stream Kafka → Iceberg para um único tópico."""
+def _start_stream(spark: SparkSession, topic: str, avro_schema: str, schema: StructType, table: str):
+    """Inicia um stream Kafka → Iceberg para um único tópico.
+
+    Deserialização Avro:
+      O value Kafka chega como bytes no wire format Confluent:
+        [0x00 magic | schema_id uint32 BE (4 bytes) | avro binary payload]
+      substring(value, 6) descarta os 5 bytes de prefixo (índice base 1 no Spark SQL)
+      antes de passar o payload puro para from_avro.
+    """
     full_table = f"{CATALOG}.{BRONZE_DB}.{table}"
     checkpoint = f"{CHECKPOINT_BASE}/{table}"
 
@@ -196,13 +224,13 @@ def _start_stream(spark: SparkSession, topic: str, schema: StructType, table: st
     )
 
     df_parsed = (
-        df_raw.selectExpr(
-            "CAST(key AS STRING) AS kafka_key",
-            "CAST(value AS STRING) AS _json",
-            "CAST(offset AS STRING) AS kafka_offset",
-            "CAST(timestamp AS STRING) AS kafka_timestamp",
+        df_raw.select(
+            expr("CAST(key AS STRING)").alias("kafka_key"),
+            # Descarta os 5 bytes do prefixo Confluent antes de deserializar
+            from_avro(expr("substring(value, 6)"), avro_schema).alias("_data"),
+            expr("CAST(offset AS STRING)").alias("kafka_offset"),
+            expr("CAST(timestamp AS STRING)").alias("kafka_timestamp"),
         )
-        .withColumn("_data", from_json(col("_json"), schema))
         .select(
             *[col(f"_data.{f.name}").alias(f.name) for f in schema.fields],
             "kafka_key",
@@ -228,8 +256,9 @@ def main() -> None:
     queries = []
     for topic, table in TABLE_MAP.items():
         schema = SCHEMAS[topic]
+        avro_schema = _fetch_avro_schema(topic)
         _ensure_bronze_table(spark, table, schema)
-        query = _start_stream(spark, topic, schema, table)
+        query = _start_stream(spark, topic, avro_schema, schema, table)
         queries.append(query)
         logger.info("Stream iniciado: %s → %s.%s.%s", topic, CATALOG, BRONZE_DB, table)
 
