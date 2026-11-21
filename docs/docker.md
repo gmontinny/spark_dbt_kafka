@@ -218,6 +218,84 @@ SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: PLAINTEXT
 
 ---
 
+### `make stream` falha com `Failed to find the data source: iceberg`
+
+O JAR do Iceberg não estava nos `--packages` do `spark-connect`. Solução já aplicada no `docker-compose.yml`:
+```
+org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.12.0
+```
+E no `spark-connect/conf/spark-defaults.conf`:
+```properties
+spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+spark.sql.catalog.spark_catalog.type=hive
+spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+```
+
+> A versão do JAR deve existir no Maven Central. Para verificar versões disponíveis:
+> `curl -s https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-4.0_2.13/maven-metadata.xml`
+
+---
+
+### Tabelas Bronze aparecem em `hive.*` em vez de `iceberg.*` no Trino
+
+O Hive Metastore armazena metadados de qualquer tabela independente do formato. Com dois conectores (`hive` e `iceberg`) apontando para o mesmo metastore, ambos enxergavam as mesmas tabelas — mas o conector `hive` não consegue ler tabelas Iceberg e retorna `Cannot query Iceberg table`.
+
+Solução já aplicada: `trino/catalog/hive.properties` foi removido. O Trino agora expõe apenas o catálogo `iceberg`. Todas as tabelas devem ser acessadas como:
+```sql
+SELECT * FROM iceberg.raw_olist_staging.bronze_orders;
+SELECT * FROM iceberg.raw_olist_marts.fct_orders;
+```
+
+---
+
+### `make stream` falha com `kafka_key is out of order`
+
+O Iceberg valida a ordem das colunas ao escrever. O stream estava produzindo as colunas de metadados Kafka (`kafka_key`, `kafka_offset`, `kafka_timestamp`) antes das colunas de dados, mas a tabela foi criada com os dados primeiro. Solução já aplicada em `stream_kafka_to_iceberg.py`: o `select` do stream agora segue a mesma ordem do `CREATE TABLE` — colunas de dados primeiro, metadados depois.
+
+Se as tabelas Bronze já existirem com o schema antigo (ordem errada), é necessário dropá-las antes de reiniciar o stream:
+```bash
+docker compose exec trino trino --execute "
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_orders;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_customers;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_order_items;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_order_payments;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_order_reviews;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_products;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_sellers;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_geolocation;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_category_translation;
+"
+```
+
+---
+
+### `make topics` falha com `No module named 'confluent_kafka'`
+
+O volume `.:/workspace` sobrescreve o `/workspace` inteiro no runtime, incluindo o `.venv` criado durante o build da imagem. Solução já aplicada no `.devcontainer/Dockerfile`:
+```dockerfile
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+```
+O venv fica em `/opt/venv` (fora do workspace) e não é apagado pelo volume. O `PATH` inclui `/opt/venv/bin` para que todos os comandos do container usem o venv correto.
+
+---
+
+### `make topics` falha com `No module named 'src'`
+
+O `/workspace` não estava no `sys.path` do Python dentro do container. Solução já aplicada no `docker-compose.yml`:
+```yaml
+dev:
+  environment:
+    - PYTHONPATH=/workspace
+```
+
+---
+
+### `make <qualquer>` falha com `docker-compose: command not found`
+
+O Makefile usava `docker-compose` (CLI v1, removida em sistemas modernos). Solução já aplicada — todos os targets usam `docker compose` (v2).
+
+---
+
 ### Ver logs em tempo real
 
 ```bash

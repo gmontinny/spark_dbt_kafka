@@ -261,7 +261,7 @@ services:
     command:
       - /opt/spark/sbin/start-connect-server.sh
       - --packages
-      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1,org.apache.hadoop:hadoop-aws:3.3.6,com.amazonaws:aws-java-sdk-bundle:1.12.262,com.mysql:mysql-connector-j:8.0.33
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1,org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.12.0,org.apache.hadoop:hadoop-aws:3.3.6,com.amazonaws:aws-java-sdk-bundle:1.12.262,com.mysql:mysql-connector-j:8.0.33
       - --conf
       - spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
       - --conf

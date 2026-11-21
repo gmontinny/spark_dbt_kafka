@@ -204,10 +204,10 @@ def _start_stream(spark: SparkSession, topic: str, schema: StructType, table: st
         )
         .withColumn("_data", from_json(col("_json"), schema))
         .select(
+            *[col(f"_data.{f.name}").alias(f.name) for f in schema.fields],
             "kafka_key",
             "kafka_offset",
             "kafka_timestamp",
-            *[col(f"_data.{f.name}").alias(f.name) for f in schema.fields],
             current_timestamp().cast(StringType()).alias("ingestion_timestamp"),
         )
     )
