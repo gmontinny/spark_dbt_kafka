@@ -308,6 +308,7 @@ services:
       - .env
     environment:
       # Aponta para os serviços internos da rede Docker
+      - PYTHONPATH=/workspace
       - KAFKA_BROKERS=${KAFKA_BROKERS}
       - SPARK_CONNECT_URL=${SPARK_CONNECT_URL}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT}

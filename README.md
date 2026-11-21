@@ -125,26 +125,22 @@ SPARK_CONNECT_URL=sc://localhost:15002
 
 ### 1. Subir a infraestrutura
 
+Na primeira execução as imagens serão buildadas automaticamente (~5 minutos):
+
 ```bash
 make up
 # ou
 docker compose up -d
 ```
 
-Aguarde todos os serviços ficarem saudáveis (~2 minutos):
+Aguarde todos os serviços ficarem saudáveis (~2 minutos após o build):
 ```bash
 docker compose ps
 ```
 
-### 2. Instalar dependências Python
+Todos os comandos do pipeline (`make topics`, `make produce`, etc.) rodam **dentro do container `dev`**, que já tem todas as dependências instaladas. Não é necessário instalar nada no host.
 
-```bash
-# Com uv (recomendado)
-uv sync
-
-# Com pip
-pip install -r requirements-pip.txt
-```
+> Para rodar os scripts **fora do Docker** (direto no host), instale as dependências com `uv sync` ou `pip install -r requirements-pip.txt` e sobrescreva as variáveis de ambiente com os hosts externos (ver seção Configuração).
 
 ---
 

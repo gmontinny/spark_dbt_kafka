@@ -1,11 +1,10 @@
 FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    # uv instala em ~/.local/bin
     PATH="/root/.local/bin:${PATH}" \
-    # uv: copia arquivos em vez de symlinks (necessário em volumes Docker)
+    # Venv fora do /workspace para não ser sobrescrito pelo volume do docker-compose
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
-    # Evita .pyc e buffers de saída
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
@@ -37,3 +36,6 @@ COPY pyproject.toml uv.lock* README.md ./
 # O cache do uv é montado para acelerar rebuilds sem persistir no layer.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --all-groups
+
+# Garante que o venv esteja no PATH para todos os comandos do container
+ENV PATH="/opt/venv/bin:${PATH}"

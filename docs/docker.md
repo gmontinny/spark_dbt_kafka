@@ -208,6 +208,16 @@ docker compose up -d hive-metastore
 
 ---
 
+### `schema-registry` falha com `No supported Kafka endpoints are configured`
+
+A variável `SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS` estava configurada com o prefixo do listener (`INTERNAL://kafka:9093`). O Schema Registry 8.x espera apenas `host:porta` — o protocolo é resolvido via `SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL`. Solução já aplicada:
+```yaml
+SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9093
+SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: PLAINTEXT
+```
+
+---
+
 ### Ver logs em tempo real
 
 ```bash
@@ -218,3 +228,47 @@ docker compose logs -f
 docker compose logs -f hive-metastore
 docker compose logs -f spark-connect
 ```
+
+---
+
+## Conectando o DataGrip ao Trino
+
+**1. Adicionar datasource**
+
+`File → New → Data Source → Trino`
+
+Se não aparecer na lista: `File → New → Data Source → Other → Trino`.
+
+**2. Configurações da conexão**
+
+| Campo    | Valor                          |
+|----------|--------------------------------|
+| Host     | `localhost`                    |
+| Port     | `8080`                         |
+| User     | `admin`                        |
+| Database | `iceberg`                      |
+
+> O Trino não autentica por padrão — qualquer string funciona no campo User.
+
+**3. Driver**
+
+Na primeira conexão o DataGrip exibe **Download missing driver files** — clica para baixar o driver JDBC oficial automaticamente.
+
+**4. URL JDBC** (alternativa manual)
+
+```
+jdbc:trino://localhost:8080/iceberg
+```
+
+Para apontar direto para um schema Gold:
+```
+jdbc:trino://localhost:8080/iceberg/raw_olist_marts
+```
+
+**5. Schemas disponíveis**
+
+Após conectar, no painel lateral marque:
+- `iceberg` → `raw_olist_staging` — tabelas Bronze e views Silver
+- `iceberg` → `raw_olist_marts` — tabelas Gold (fatos e dimensões)
+
+> Se der erro de SSL, adicione `?SSL=false` na URL: `jdbc:trino://localhost:8080/iceberg?SSL=false`
