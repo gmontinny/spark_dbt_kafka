@@ -34,8 +34,8 @@
 WITH orders AS (
     SELECT * FROM {{ ref('stg_orders') }}
     {% if is_incremental() %}
-        WHERE ingestion_timestamp >= (
-            SELECT MAX(ingestion_timestamp) - INTERVAL '3' DAY
+        WHERE TRY_CAST(ingestion_timestamp AS TIMESTAMP) >= (
+            SELECT MAX(TRY_CAST(ingestion_timestamp AS TIMESTAMP)) - INTERVAL '3' DAY
             FROM {{ this }}
         )
     {% endif %}

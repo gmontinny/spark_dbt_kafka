@@ -1,0 +1,20 @@
+# MinIO runtime data (volumes Docker montados localmente)
+minio_data/
+
+# dbt artefatos gerados
+dbt_olist/target/
+dbt_olist/logs/
+dbt_olist/.user.yml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db

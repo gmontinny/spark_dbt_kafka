@@ -2,6 +2,9 @@ name: "dbt_olist"
 version: "1.0.0"
 config-version: 2
 
+flags:
+  require_certificate_validation: true
+
 profile: "dbt_olist"
 
 model-paths: ["models"]

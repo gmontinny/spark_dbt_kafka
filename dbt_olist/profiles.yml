@@ -5,8 +5,8 @@ dbt_olist:
       type: trino
       method: none
       user: dbt_user
-      host: localhost
-      port: 8080
+      host: "{{ env_var('TRINO_HOST', 'trino') }}"
+      port: "{{ env_var('TRINO_PORT', '8080') | int }}"
       # Catálogo Iceberg: necessário para incremental_strategy='merge' e table_properties
       # O catálogo 'hive' não suporta merge nativo — apenas o conector Iceberg do Trino suporta
       database: iceberg

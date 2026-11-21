@@ -42,8 +42,18 @@ translations AS (
     SELECT
         product_category_name,
         product_category_name_english
-    FROM {{ source('iceberg_bronze', 'bronze_category_translation') }}
-    WHERE product_category_name IS NOT NULL
+    FROM (
+        SELECT
+            product_category_name,
+            product_category_name_english,
+            ROW_NUMBER() OVER (
+                PARTITION BY product_category_name
+                ORDER BY CAST(kafka_offset AS BIGINT) DESC
+            ) AS row_num
+        FROM {{ source('iceberg_bronze', 'bronze_category_translation') }}
+        WHERE product_category_name IS NOT NULL
+    )
+    WHERE row_num = 1
 )
 
 SELECT

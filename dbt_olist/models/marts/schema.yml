@@ -20,28 +20,25 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - delivered
-                - shipped
-                - canceled
-                - invoiced
-                - processing
-                - created
-                - approved
-                - unavailable
+              arguments:
+                values:
+                  - delivered
+                  - shipped
+                  - canceled
+                  - invoiced
+                  - processing
+                  - created
+                  - approved
+                  - unavailable
       - name: order_date
         tests:
           - not_null
       - name: is_delivered
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
       - name: delivered_on_time
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
       - name: total_payment_value
         tests:
           - not_null

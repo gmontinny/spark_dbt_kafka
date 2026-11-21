@@ -203,6 +203,25 @@ make dbt-run
 make dbt-test
 ```
 
+> Se o `dbt-run` falhar com `ICEBERG_COMMIT_ERROR` (schema dos marts mudou) ou `ICEBERG_MISSING_METADATA` (metadata corrompida/ausente no MinIO), execute `make reset-marts` antes de rodar novamente.
+
+---
+
+## Reset de Tabelas
+
+| Comando | O que faz | Quando usar |
+|---|---|---|
+| `make reset-marts` | Remove entradas do Hive Metastore (via PostgreSQL) + arquivos do MinIO para `fct_orders`, `dim_customers`, `dim_sellers` | Schema dos marts mudou (`ICEBERG_COMMIT_ERROR`) ou metadata corrompida (`ICEBERG_MISSING_METADATA`) |
+| `make reset-bronze` | Dropa todas as tabelas Bronze via Trino + checkpoints e dados do MinIO | Schema do Bronze mudou ou dados corrompidos |
+
+**Por que o `reset-marts` usa PostgreSQL diretamente?**
+
+O Trino não consegue executar `DROP TABLE` quando os arquivos de metadata Iceberg já foram removidos do MinIO — retorna `ICEBERG_MISSING_METADATA` em vez de limpar a entrada. O `reset-marts` contorna isso removendo as entradas diretamente do PostgreSQL (backend do Hive Metastore), respeitando todas as foreign keys, e depois limpa os arquivos restantes no MinIO. Funciona em qualquer estado: metadata presente, ausente ou parcialmente corrompida.
+
+Tabelas `__dbt_tmp` órfãs (criadas por runs interrompidos) também são removidas automaticamente.
+
+> Após qualquer reset, rode `make dbt-run` para recriar as tabelas do zero.
+
 ---
 
 ## Pipeline B — Batch Direto (Desenvolvimento / Reprocessamento)

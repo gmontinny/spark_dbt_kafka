@@ -280,6 +280,123 @@ O venv fica em `/opt/venv` (fora do workspace) e não é apagado pelo volume. O 
 
 ---
 
+### Tabelas Bronze com todas as colunas `null` após `make produce`
+
+O produtor serializa as mensagens em **Avro** com wire format Confluent:
+```
+[0x00 magic byte | schema_id uint32 BE (4 bytes) | avro binary payload]
+```
+O stream estava usando `CAST(value AS STRING)` + `from_json`, que espera JSON puro. Ao receber bytes Avro binários, o `from_json` retorna `null` em todos os campos.
+
+Solução já aplicada em `stream_kafka_to_iceberg.py`:
+- `from_json` substituído por `from_avro` (módulo `pyspark.sql.avro.functions`)
+- Os 5 bytes do prefixo Confluent são descartados antes da deserialização: `substring(value, 6)`
+- O schema Avro de cada tópico é buscado do Schema Registry via HTTP antes de iniciar o stream
+
+O JAR `spark-avro` também precisa estar nos `--packages` do `spark-connect` (já aplicado no `docker-compose.yml`):
+```
+org.apache.spark:spark-avro_2.13:4.0.1
+```
+
+Se as tabelas Bronze já existirem com dados nulos, é necessário dropá-las e limpar os checkpoints antes de reiniciar o stream:
+```bash
+# 1. Dropar tabelas Bronze
+docker compose exec trino trino --execute "
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_orders;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_customers;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_order_items;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_order_payments;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_order_reviews;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_products;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_sellers;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_geolocation;
+  DROP TABLE IF EXISTS iceberg.raw_olist_staging.bronze_category_translation;
+"
+
+# 2. Limpar checkpoints
+docker run --rm --network spark_dbt_kafka_spark_network \
+  spark_dbt_kafka-minio-client:latest \
+  "mcli alias set m http://minio:9000 minioadmin minioadmin && \
+   mcli rm --recursive --force m/spark-demo/stream-1/"
+```
+
+---
+
+### `make stream` falha com `AVRO_NOT_LOADED_SQL_FUNCTIONS_UNUSABLE`
+
+O JAR `spark-avro` não estava nos `--packages` do `spark-connect`. O `from_avro` existe no PySpark como função Python, mas a implementação roda na JVM e exige o JAR no classpath do servidor. Solução já aplicada no `docker-compose.yml`:
+```
+org.apache.spark:spark-avro_2.13:4.0.1
+```
+Após adicionar, é necessário recriar o container:
+```bash
+docker compose up -d --build spark-connect
+```
+
+---
+
+### Warning `too_many_pings` / `GOAWAY ENHANCE_YOUR_CALM` no `make stream`
+
+Mensagem cosmética do gRPC — não afeta os streams. O cliente PySpark faz keepalive a cada 60s via HTTP/2 ping frames; o servidor Spark Connect throttlea e responde com `GOAWAY`, o cliente recua e reconecta automaticamente. Os 9 streams continuam processando normalmente.
+
+---
+
+### `ICEBERG_COMMIT_ERROR: types incompatible` no `make dbt-run`
+
+Ocorre quando o schema de uma tabela Gold mudou (ex: tipo de coluna alterado) e o dbt tenta fazer `sync_all_columns` via ALTER — o Iceberg não permite mudança de tipo de coluna in-place.
+
+Solução:
+```bash
+make reset-marts
+make dbt-run
+```
+
+> Para resetar também as tabelas Bronze e checkpoints do stream (ex: mudança de schema no Bronze), use `make reset-bronze`.
+
+---
+
+### `ICEBERG_MISSING_METADATA` no `make dbt-run`
+
+```
+TrinoExternalError(type=EXTERNAL, name=ICEBERG_MISSING_METADATA,
+  message="Metadata not found in metadata location for table raw_olist_staging_raw_olist_marts.dim_sellers")
+```
+
+Ocorre quando o Hive Metastore tem entradas para as tabelas Gold mas os arquivos de metadata Iceberg no MinIO foram removidos (ex: `reset-marts` anterior limpou o MinIO mas o DROP via Trino falhou silenciosamente porque a metadata já estava corrompida). O Trino não consegue executar `DROP TABLE` em tabelas com metadata ausente — o comando retorna erro em vez de remover a entrada do metastore.
+
+Solução: o `make reset-marts` contorna isso removendo as entradas diretamente do PostgreSQL (backend do Hive Metastore), respeitando todas as foreign keys, e depois limpa o MinIO:
+
+```bash
+make reset-marts
+make dbt-run
+```
+
+Se precisar inspecionar manualmente quais tabelas estão no metastore:
+```bash
+docker compose exec postgres psql -U hive -d metastore -c \
+  "SELECT t.\"TBL_NAME\", s.\"LOCATION\" FROM \"TBLS\" t JOIN \"SDS\" s ON t.\"SD_ID\" = s.\"SD_ID\" JOIN \"DBS\" d ON t.\"DB_ID\" = d.\"DB_ID\" WHERE d.\"NAME\" = 'raw_olist_staging_raw_olist_marts';"
+```
+
+Tabelas `__dbt_tmp` órfãs (criadas por runs interrompidos) também são removidas pelo `reset-marts`, pois o script limpa todas as entradas do schema `raw_olist_staging_raw_olist_marts` de uma vez.
+
+> Para resetar também as tabelas Bronze e checkpoints do stream (ex: mudança de schema no Bronze), use `make reset-bronze`.
+
+---
+
+### `make dbt-run` falha com `Connection refused` em `localhost:8080`
+
+O `profiles.yml` tinha `host: localhost` fixo. O dbt roda dentro do container `dev`, onde o Trino é acessível via hostname `trino` (rede Docker interna). Solução já aplicada em `dbt_olist/profiles.yml`:
+```yaml
+host: "{{ env_var('TRINO_HOST', 'trino') }}"
+port: "{{ env_var('TRINO_PORT', '8080') | int }}"
+```
+As variáveis `TRINO_HOST` e `TRINO_PORT` já estão definidas no serviço `dev` do `docker-compose.yml`. Para rodar o dbt fora do Docker, sobrescreva:
+```bash
+TRINO_HOST=localhost dbt run --profiles-dir .
+```
+
+---
+
 ### `make topics` falha com `No module named 'src'`
 
 O `/workspace` não estava no `sys.path` do Python dentro do container. Solução já aplicada no `docker-compose.yml`:
