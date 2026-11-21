@@ -10,7 +10,7 @@ Pipeline de dados end-to-end sobre o dataset público [Olist](https://www.kaggle
 CSV Files (data/)
       │
       ▼  [src/producer_csv_kafka.py]
-Apache Kafka (9 tópicos + 9 DLQs)
+Apache Kafka (9 tópicos + 9 DLQs) + Schema Registry (Avro)
       │
       ▼  [src/stream_kafka_to_iceberg.py]
 Iceberg Bronze (raw_olist_staging.bronze_*)
@@ -41,7 +41,7 @@ Silver + Gold (mesmo fluxo dbt)
 ## Pré-requisitos
 
 - Docker + Docker Compose
-- Python 3.10+ com `uv` (ou `pip`)
+- Python 3.12+ com `uv` (ou `pip`)
 - Arquivo `.env` configurado (já incluso no repositório)
 
 ---
@@ -53,8 +53,11 @@ spark_dbt_kafka/
 ├── data/                          # CSVs do dataset Olist
 ├── docs/solucao.md                # Documentação arquitetural detalhada
 ├── src/
-│   ├── create_kafka_topics.py     # Cria tópicos e DLQs no Kafka
-│   ├── producer_csv_kafka.py      # Produz CSVs → Kafka (idempotente)
+│   ├── schemas/
+│   │   ├── avro_schemas.py        # Schemas Avro para os 9 tópicos + DLQ
+│   │   └── registry.py            # Cliente Schema Registry + serializers
+│   ├── create_kafka_topics.py     # Cria tópicos, DLQs e registra schemas Avro
+│   ├── producer_csv_kafka.py      # Produz CSVs → Kafka (Avro + idempotente)
 │   ├── stream_kafka_to_iceberg.py # Streaming Kafka → Iceberg Bronze
 │   └── ingest_csv_to_raw.py       # Ingestão batch CSV → Hive/Parquet
 ├── dbt_olist/
@@ -75,8 +78,16 @@ spark_dbt_kafka/
 │           ├── fct_orders.sql
 │           ├── dim_customers.sql
 │           └── dim_sellers.sql
+├── .devcontainer/
+│   ├── devcontainer.json
+│   └── Dockerfile
+├── hive-metastore/                # Dockerfile + configuração do Hive Metastore
+├── spark-connect/                 # Dockerfile + spark-defaults.conf
+├── trino/catalog/                 # iceberg.properties + hive.properties
 ├── docker-compose.yml
 ├── Makefile
+├── pyproject.toml
+├── requirements.txt
 └── .env
 ```
 
@@ -88,15 +99,22 @@ spark_dbt_kafka/
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `KAFKA_BROKERS` | `kafka:9093` | Endereço do broker Kafka (interno) |
+| `KAFKA_BROKERS` | `kafka:9093` | Broker Kafka — rede interna Docker |
+| `KAFKA_BROKERS_EXTERNAL` | `localhost:9092` | Broker Kafka — acesso do host |
+| `KAFKA_SCHEMA_REGISTRY` | `http://schema-registry:8081` | URL do Schema Registry |
 | `SPARK_CONNECT_URL` | `sc://spark-connect:15002` | URL do Spark Connect Server |
 | `MINIO_ACCESS_KEY` | `minioadmin` | Credencial MinIO |
 | `MINIO_SECRET_KEY` | `minioadmin` | Credencial MinIO |
+| `MINIO_ENDPOINT` | `http://minio:9000` | Endpoint S3A do MinIO |
+| `TRINO_HOST` | `trino` | Host do Trino (interno) |
 | `TRINO_PORT` | `8080` | Porta do Trino |
+| `CSV_DIR` | `./data` | Diretório dos CSVs (producer, roda no host/dev) |
+| `DATA_DIR` | `/opt/spark/work-dir/data` | Diretório dos CSVs (ingest batch, roda no spark-connect) |
 
-Para execução local (fora do Docker), use `localhost` nos hosts:
+Para execução local (fora do Docker), sobrescreva os hosts:
 ```bash
 KAFKA_BROKERS=localhost:9092
+KAFKA_SCHEMA_REGISTRY=http://localhost:8081
 SPARK_CONNECT_URL=sc://localhost:15002
 ```
 
@@ -131,7 +149,7 @@ pip install -r requirements.txt
 
 ## Pipeline A — Streaming via Kafka (Recomendado para produção)
 
-### Passo 1: Criar tópicos Kafka
+### Passo 1: Criar tópicos Kafka e registrar schemas Avro
 
 ```bash
 make topics
@@ -139,18 +157,18 @@ make topics
 python src/create_kafka_topics.py
 ```
 
-Cria 9 tópicos de dados + 9 DLQs:
+Cria 9 tópicos de dados + 9 DLQs e registra todos os schemas Avro no Schema Registry:
 ```
-olist.raw.orders          (4 partições)
-olist.raw.customers       (2 partições)
-olist.raw.order_items     (4 partições)
-olist.raw.order_payments  (2 partições)
-olist.raw.order_reviews   (2 partições)
-olist.raw.products        (2 partições)
-olist.raw.sellers         (2 partições)
-olist.raw.geolocation     (2 partições)
-olist.raw.category_translation (1 partição)
-+ DLQs correspondentes (*.dlq)
+olist.raw.orders          (4 partições — delete, 7 dias)
+olist.raw.customers       (2 partições — compact)
+olist.raw.order_items     (4 partições — delete, 7 dias)
+olist.raw.order_payments  (4 partições — delete, 7 dias)
+olist.raw.order_reviews   (2 partições — delete, 7 dias)
+olist.raw.products        (2 partições — compact)
+olist.raw.sellers         (2 partições — compact)
+olist.raw.geolocation     (2 partições — compact)
+olist.raw.category_translation (1 partição — compact)
++ DLQs correspondentes (*.dlq — delete, 30 dias)
 ```
 
 ### Passo 2: Iniciar o consumer Spark (Bronze)
@@ -162,7 +180,7 @@ make stream
 python src/stream_kafka_to_iceberg.py
 ```
 
-O stream fica ativo aguardando mensagens. Checkpoints são salvos em `s3a://spark-demo/stream-1/checkpoints/`.
+Inicia 9 streams paralelos (um por tópico). Checkpoints salvos em `s3a://spark-demo/stream-1/checkpoints/<tabela>`.
 
 ### Passo 3: Produzir os CSVs para o Kafka
 
@@ -174,11 +192,11 @@ python src/producer_csv_kafka.py
 
 Saída esperada:
 ```
-2026-01-01 10:00:00 [INFO] KafkaCSVProducer — Iniciando ingestão de 9 arquivos CSV...
-2026-01-01 10:00:01 [INFO] KafkaCSVProducer — olist_orders_dataset.csv — chunk 1 processado.
-2026-01-01 10:00:05 [INFO] KafkaCSVProducer — olist_orders_dataset.csv → tópico 'olist.raw.orders': 99441 enviados, 0 para DLQ.
+2026-01-01 10:00:00 [INFO] KafkaCSVProducer — Iniciando ingestão — 9 arquivo(s) | broker: kafka:9093
+2026-01-01 10:00:01 [INFO] KafkaCSVProducer — olist_orders_dataset.csv — chunk 1 processado (5000 msgs).
+2026-01-01 10:00:05 [INFO] KafkaCSVProducer — olist_orders_dataset.csv        → olist.raw.orders    enviados=99441  dlq=0
 ...
-2026-01-01 10:01:30 [INFO] KafkaCSVProducer — Ingestão concluída.
+2026-01-01 10:01:30 [INFO] KafkaCSVProducer — Ingestão concluída — enviados: 603346 | DLQ: 0
 ```
 
 ### Passo 4: Executar transformações dbt
@@ -296,6 +314,8 @@ LIMIT 20;
 | Superset | http://localhost:8088 | admin / admin |
 | Schema Registry | http://localhost:8081 | — |
 | Hive Metastore | thrift://localhost:9083 | — |
+| StarRocks FE | http://localhost:8030 | — |
+| PostgreSQL | localhost:5432 | hive / hive |
 
 ---
 
@@ -317,14 +337,17 @@ ALTER TABLE iceberg.raw_olist_staging.bronze_orders
 EXECUTE remove_orphan_files(retention_threshold => '7d');
 ```
 
+Os marts Gold executam `optimize` e `expire_snapshots` automaticamente via `post_hook` no dbt.
+
 ---
 
 ## Boas Práticas Implementadas
 
-- **Idempotência**: Produtor Kafka com `enable.idempotence=true` + `acks=all`. Modelos dbt com `merge` incremental.
+- **Serialização Avro + Schema Registry**: Contrato de dados explícito por tópico. Wire format Confluent `[0x00 | schema_id 4B | avro binary]`. Mensagens fora do schema são rejeitadas antes de chegar ao broker.
+- **Idempotência**: Produtor Kafka com `enable.idempotence=True` + `acks=all`. Modelos dbt com `merge` incremental.
+- **Dead Letter Queue**: Registros inválidos serializam um envelope `DeadLetterRecord` em Avro para `*.dlq`, sem travar o pipeline principal.
 - **Schemas explícitos**: Nenhuma inferência automática de tipos em produção (`StructType` no Spark, `schema.yml` no dbt).
-- **Dead Letter Queue**: Registros inválidos são roteados para `*.dlq` sem travar o pipeline principal.
-- **Deduplicação**: `ROW_NUMBER() OVER (PARTITION BY pk ORDER BY ...)` nos modelos staging.
+- **Deduplicação**: `ROW_NUMBER() OVER (PARTITION BY pk ORDER BY CAST(kafka_offset AS BIGINT) DESC)` nos modelos staging.
 - **Tratamento de nulos**: `COALESCE` em todos os campos monetários e `TRY_CAST` para timestamps.
-- **Checkpointing**: Offsets Kafka persistidos em MinIO (`s3a://spark-demo/stream-1/checkpoints/`).
+- **Checkpointing**: Offsets Kafka persistidos por tabela em MinIO (`s3a://spark-demo/stream-1/checkpoints/<tabela>`).
 - **Testes de qualidade**: `unique`, `not_null` e `accepted_values` em todas as chaves primárias e campos críticos.
