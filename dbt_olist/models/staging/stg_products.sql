@@ -92,7 +92,8 @@ SELECT
     p.product_category_name,
     COALESCE(
         t.product_category_name_english,
-        p.product_category_name
+        p.product_category_name,
+        'uncategorized'
     )                                                           AS product_category_name_en,
     CAST(p.product_name_lenght        AS INTEGER)               AS product_name_length,
     CAST(p.product_description_lenght AS INTEGER)               AS product_description_length,
