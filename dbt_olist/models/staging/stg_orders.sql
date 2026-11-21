@@ -5,21 +5,30 @@
     )
 }}
 
-/*
-  Fonte: bronze_orders (Iceberg, gerada pelo streaming Kafka → Spark)
+{% if var('pipeline', 'streaming') == 'batch' %}
 
-  Deduplicação:
-    Usa kafka_offset DESC como critério de ordenação dentro da Window Function.
-    O offset é monotonicamente crescente por partição Kafka, portanto o maior
-    offset representa a versão mais recente do evento para aquele order_id.
-    Isso é mais confiável que order_purchase_timestamp (string, pode ser nulo).
+WITH source AS (
+    SELECT * FROM {{ source('raw_olist', 'orders') }}
+),
 
-  Transformações:
-    - TRY_CAST em todos os timestamps: retorna NULL em vez de falhar em datas malformadas
-    - LOWER(TRIM()) no status: normaliza variações de case e espaços
-    - CAST(order_purchased_at AS DATE): materializa a data para particionamento nos marts
-    - is_delivered: flag booleana para filtros frequentes nos marts
-*/
+deduped AS (
+    SELECT
+        order_id,
+        customer_id,
+        LOWER(TRIM(order_status))                                       AS order_status,
+        TRY_CAST(order_purchase_timestamp    AS TIMESTAMP)              AS order_purchased_at,
+        TRY_CAST(order_approved_at           AS TIMESTAMP)              AS order_approved_at,
+        TRY_CAST(order_delivered_carrier_date   AS TIMESTAMP)           AS order_delivered_carrier_at,
+        TRY_CAST(order_delivered_customer_date  AS TIMESTAMP)           AS order_delivered_customer_at,
+        TRY_CAST(order_estimated_delivery_date  AS TIMESTAMP)           AS order_estimated_delivery_at,
+        CAST(NULL AS VARCHAR)                                           AS ingestion_timestamp,
+        ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY order_id)    AS row_num
+    FROM source
+    WHERE order_id IS NOT NULL
+      AND TRIM(order_id) <> ''
+)
+
+{% else %}
 
 WITH source AS (
     SELECT * FROM {{ source('iceberg_bronze', 'bronze_orders') }}
@@ -35,7 +44,6 @@ deduped AS (
         TRY_CAST(order_delivered_carrier_date   AS TIMESTAMP)           AS order_delivered_carrier_at,
         TRY_CAST(order_delivered_customer_date  AS TIMESTAMP)           AS order_delivered_customer_at,
         TRY_CAST(order_estimated_delivery_date  AS TIMESTAMP)           AS order_estimated_delivery_at,
-        kafka_offset,
         ingestion_timestamp,
         ROW_NUMBER() OVER (
             PARTITION BY order_id
@@ -45,6 +53,8 @@ deduped AS (
     WHERE order_id IS NOT NULL
       AND TRIM(order_id) <> ''
 )
+
+{% endif %}
 
 SELECT
     order_id,

@@ -39,6 +39,7 @@ logger = logging.getLogger("BatchIngest")
 SPARK_CONNECT_URL = os.getenv("SPARK_CONNECT_URL", "sc://localhost:15002")
 DATA_DIR = os.getenv("DATA_DIR", "/opt/spark/work-dir/data")
 RAW_DB = "raw_olist"
+CATALOG = "spark_catalog"
 WAREHOUSE = "s3a://warehouse"
 
 
@@ -189,10 +190,10 @@ def get_spark() -> SparkSession:
 
 
 def ingest_table(spark: SparkSession, cfg: TableConfig) -> None:
-    """Lê um CSV e persiste como tabela Parquet no Hive Metastore."""
+    """Lê um CSV e persiste como tabela Iceberg no catálogo spark_catalog."""
     csv_path = f"{DATA_DIR}/{cfg.csv_file}"
     table_location = f"{WAREHOUSE}/{RAW_DB}.db/{cfg.table_name}"
-    full_table = f"{RAW_DB}.{cfg.table_name}"
+    full_table = f"{CATALOG}.{RAW_DB}.{cfg.table_name}"
 
     logger.info("Lendo: %s", csv_path)
     df = (
@@ -209,7 +210,11 @@ def ingest_table(spark: SparkSession, cfg: TableConfig) -> None:
     if corrupt_count:
         logger.warning("%s: %d registros corrompidos detectados.", cfg.csv_file, corrupt_count)
 
-    writer = df.write.format("parquet").mode("overwrite").option("path", table_location)
+    writer = (
+        df.write.format("iceberg")
+        .mode("overwrite")
+        .option("path", table_location)
+    )
 
     if cfg.partition_cols:
         writer = writer.partitionBy(*cfg.partition_cols)
@@ -220,7 +225,7 @@ def ingest_table(spark: SparkSession, cfg: TableConfig) -> None:
 
 def main() -> None:
     spark = get_spark()
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {RAW_DB}")
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {CATALOG}.{RAW_DB}")
     logger.info("Iniciando ingestão batch de %d tabelas...", len(TABLES))
 
     for cfg in TABLES:

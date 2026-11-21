@@ -5,18 +5,30 @@
     )
 }}
 
-/*
-  Fonte: bronze_customers (Iceberg)
+{% if var('pipeline', 'streaming') == 'batch' %}
 
-  Deduplicação por customer_unique_id:
-    Um mesmo cliente pode aparecer com customer_ids diferentes em pedidos distintos.
-    A identidade real do cliente é customer_unique_id. Mantemos o registro com
-    maior kafka_offset (versão mais recente no broker).
+WITH source AS (
+    SELECT * FROM {{ source('raw_olist', 'customers') }}
+),
 
-  Normalização:
-    - customer_city: LOWER + TRIM (dados originais têm variações como "São Paulo" / "sao paulo")
-    - customer_state: UPPER + TRIM (garantir UF em maiúsculas para joins com dim_customers)
-*/
+deduped AS (
+    SELECT
+        customer_id,
+        customer_unique_id,
+        customer_zip_code_prefix,
+        LOWER(TRIM(customer_city))              AS customer_city,
+        UPPER(TRIM(customer_state))             AS customer_state,
+        CAST(NULL AS VARCHAR)                   AS ingestion_timestamp,
+        ROW_NUMBER() OVER (
+            PARTITION BY customer_unique_id
+            ORDER BY customer_id
+        )                                       AS row_num
+    FROM source
+    WHERE customer_id IS NOT NULL
+      AND customer_unique_id IS NOT NULL
+)
+
+{% else %}
 
 WITH source AS (
     SELECT * FROM {{ source('iceberg_bronze', 'bronze_customers') }}
@@ -27,17 +39,19 @@ deduped AS (
         customer_id,
         customer_unique_id,
         customer_zip_code_prefix,
-        LOWER(TRIM(customer_city))                  AS customer_city,
-        UPPER(TRIM(customer_state))                 AS customer_state,
+        LOWER(TRIM(customer_city))              AS customer_city,
+        UPPER(TRIM(customer_state))             AS customer_state,
         ingestion_timestamp,
         ROW_NUMBER() OVER (
             PARTITION BY customer_unique_id
             ORDER BY CAST(kafka_offset AS BIGINT) DESC
-        )                                           AS row_num
+        )                                       AS row_num
     FROM source
     WHERE customer_id IS NOT NULL
       AND customer_unique_id IS NOT NULL
 )
+
+{% endif %}
 
 SELECT
     customer_id,

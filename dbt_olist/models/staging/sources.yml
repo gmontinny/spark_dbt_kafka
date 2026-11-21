@@ -94,7 +94,7 @@ sources:
   # ---------------------------------------------------------------------------
   - name: raw_olist
     description: "Tabelas Parquet brutas geradas pela ingestão batch via Spark (Pipeline B)."
-    database: hive
+    database: iceberg
     schema: raw_olist
     tables:
       - name: orders

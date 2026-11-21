@@ -5,15 +5,25 @@
     )
 }}
 
-/*
-  Fonte: bronze_sellers (Iceberg)
+{% if var('pipeline', 'streaming') == 'batch' %}
 
-  Deduplicação por seller_id via kafka_offset DESC.
+WITH source AS (
+    SELECT * FROM {{ source('raw_olist', 'sellers') }}
+),
 
-  Normalização:
-    - seller_city: LOWER + TRIM
-    - seller_state: UPPER + TRIM (UF em maiúsculas para consistência com dim_customers)
-*/
+deduped AS (
+    SELECT
+        seller_id,
+        seller_zip_code_prefix,
+        LOWER(TRIM(seller_city))    AS seller_city,
+        UPPER(TRIM(seller_state))   AS seller_state,
+        CAST(NULL AS VARCHAR)       AS ingestion_timestamp,
+        ROW_NUMBER() OVER (PARTITION BY seller_id ORDER BY seller_id) AS row_num
+    FROM source
+    WHERE seller_id IS NOT NULL
+)
+
+{% else %}
 
 WITH source AS (
     SELECT * FROM {{ source('iceberg_bronze', 'bronze_sellers') }}
@@ -33,6 +43,8 @@ deduped AS (
     FROM source
     WHERE seller_id IS NOT NULL
 )
+
+{% endif %}
 
 SELECT
     seller_id,

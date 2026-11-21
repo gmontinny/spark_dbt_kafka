@@ -5,18 +5,30 @@
     )
 }}
 
-/*
-  Fonte: bronze_order_payments (Iceberg)
+{% if var('pipeline', 'streaming') == 'batch' %}
 
-  PK composta: (order_id, payment_sequential)
-    Um pedido pode ter múltiplos pagamentos (ex: cartão + voucher).
-    payment_sequential numera cada forma de pagamento dentro do pedido.
+WITH source AS (
+    SELECT * FROM {{ source('raw_olist', 'order_payments') }}
+),
 
-  Normalização:
-    - payment_type: LOWER + TRIM para padronizar valores como "Credit_Card" → "credit_card"
-    - payment_installments: COALESCE para 1 (pagamento à vista quando ausente)
-    - payment_value: DECIMAL(10,2) com COALESCE para 0
-*/
+deduped AS (
+    SELECT
+        order_id,
+        payment_sequential,
+        LOWER(TRIM(payment_type))                                           AS payment_type,
+        CAST(COALESCE(payment_installments, 1) AS INTEGER)                  AS payment_installments,
+        CAST(COALESCE(payment_value, 0.0)      AS DECIMAL(10, 2))           AS payment_value,
+        CAST(NULL AS VARCHAR)                                               AS ingestion_timestamp,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id, payment_sequential
+            ORDER BY order_id
+        )                                                                   AS row_num
+    FROM source
+    WHERE order_id IS NOT NULL
+      AND payment_sequential IS NOT NULL
+)
+
+{% else %}
 
 WITH source AS (
     SELECT * FROM {{ source('iceberg_bronze', 'bronze_order_payments') }}
@@ -38,6 +50,8 @@ deduped AS (
     WHERE order_id IS NOT NULL
       AND payment_sequential IS NOT NULL
 )
+
+{% endif %}
 
 SELECT
     order_id,

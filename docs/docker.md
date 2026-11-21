@@ -341,7 +341,43 @@ Mensagem cosmética do gRPC — não afeta os streams. O cliente PySpark faz kee
 
 ---
 
-### `NOT_SUPPORTED: Given correlated subquery is not supported` no `make dbt-run`
+### `SCHEMA_NOT_FOUND` / `UNSUPPORTED_TABLE_TYPE` no `make dbt-run` após `make ingest`
+
+```
+TrinoUserError(type=USER_ERROR, name=SCHEMA_NOT_FOUND,
+  message="Schema 'raw_olist_staging' does not exist")
+
+TrinoExternalError(type=EXTERNAL, name=UNSUPPORTED_TABLE_TYPE,
+  message="Not an Iceberg table: raw_olist.orders")
+```
+
+Dois problemas encadeados do Pipeline B:
+
+1. `SCHEMA_NOT_FOUND`: `make dbt-run` (sem `--vars`) usa `pipeline=streaming` por padrão e tenta ler `iceberg_bronze.bronze_*` que não existe após `make ingest`. O Pipeline B requer `--vars '{pipeline: batch}'`.
+
+2. `UNSUPPORTED_TABLE_TYPE`: o `ingest_csv_to_raw.py` gravava em formato Parquet puro (`format("parquet")`). O conector `iceberg` do Trino só lê tabelas Iceberg. Além disso, o `sources.yml` tinha `database: hive` mas o Trino só expõe o catálogo `iceberg`.
+
+Soluções já aplicadas:
+- `ingest_csv_to_raw.py`: `format("parquet")` → `format("iceberg")`, tabelas gravadas via `spark_catalog.raw_olist.*`
+- `sources.yml`: `database: hive` → `database: iceberg` na fonte `raw_olist`
+- `dbt_project.yml`: variável `pipeline: streaming` adicionada (default)
+- Modelos staging: suportam `{% if var('pipeline') == 'batch' %}` para alternar fonte e remover colunas Kafka
+- Makefile: targets `dbt-run-batch` e `dbt-test-batch` adicionados (usam `--vars '{pipeline: batch}'`)
+- Makefile: target `reset-raw` adicionado para limpar `raw_olist.*` antes de reingerir
+
+Fluxo correto do Pipeline B:
+```bash
+make reset-raw   # se já existirem tabelas raw_olist antigas
+make ingest      # CSV → Iceberg raw_olist.*
+make reset-marts # se os marts já existirem com schema diferente
+make dbt-run-batch
+make dbt-test-batch
+# ou tudo de uma vez (sem reset):
+make pipeline
+```
+
+---
+
 
 ```
 TrinoUserError(type=USER_ERROR, name=NOT_SUPPORTED,

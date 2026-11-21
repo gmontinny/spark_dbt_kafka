@@ -5,18 +5,33 @@
     )
 }}
 
-/*
-  Fonte: bronze_order_items (Iceberg)
+{% if var('pipeline', 'streaming') == 'batch' %}
 
-  PK composta: (order_id, order_item_id)
-    Um pedido pode ter múltiplos itens numerados sequencialmente (order_item_id = 1, 2, 3...).
-    A deduplicação deve preservar a combinação única de pedido + número do item.
+WITH source AS (
+    SELECT * FROM {{ source('raw_olist', 'order_items') }}
+),
 
-  Transformações:
-    - CAST para DECIMAL(10,2) em price e freight_value: evita erros de arredondamento
-    - COALESCE(..., 0): garante que campos monetários nunca sejam NULL nos marts
-    - total_item_value: coluna derivada para evitar recálculo nos marts
-*/
+deduped AS (
+    SELECT
+        order_id,
+        order_item_id,
+        product_id,
+        seller_id,
+        TRY_CAST(shipping_limit_date AS TIMESTAMP)                          AS shipping_limit_at,
+        CAST(COALESCE(CAST(price AS VARCHAR), '0')         AS DECIMAL(10, 2)) AS price,
+        CAST(COALESCE(CAST(freight_value AS VARCHAR), '0') AS DECIMAL(10, 2)) AS freight_value,
+        CAST(NULL AS VARCHAR)                                               AS ingestion_timestamp,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id, order_item_id
+            ORDER BY order_id
+        )                                                                   AS row_num
+    FROM source
+    WHERE order_id IS NOT NULL
+      AND order_item_id IS NOT NULL
+      AND product_id IS NOT NULL
+)
+
+{% else %}
 
 WITH source AS (
     SELECT * FROM {{ source('iceberg_bronze', 'bronze_order_items') }}
@@ -41,6 +56,8 @@ deduped AS (
       AND order_item_id IS NOT NULL
       AND product_id IS NOT NULL
 )
+
+{% endif %}
 
 SELECT
     order_id,

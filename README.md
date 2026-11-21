@@ -30,9 +30,9 @@ Trino SQL / Apache Superset / StarRocks
 CSV Files (data/)
       │
       ▼  [src/ingest_csv_to_raw.py]
-Hive/Parquet Raw (raw_olist.*)
+Iceberg Raw (raw_olist.*)
       │
-      ▼  [dbt_olist/]
+      ▼  [dbt_olist/ --vars '{pipeline: batch}']
 Silver + Gold (mesmo fluxo dbt)
 ```
 
@@ -59,7 +59,7 @@ spark_dbt_kafka/
 │   ├── create_kafka_topics.py     # Cria tópicos, DLQs e registra schemas Avro
 │   ├── producer_csv_kafka.py      # Produz CSVs → Kafka (Avro + idempotente)
 │   ├── stream_kafka_to_iceberg.py # Streaming Kafka → Iceberg Bronze
-│   └── ingest_csv_to_raw.py       # Ingestão batch CSV → Hive/Parquet
+│   └── ingest_csv_to_raw.py       # Ingestão batch CSV → Iceberg Raw (raw_olist.*)
 ├── dbt_olist/
 │   ├── dbt_project.yml
 │   ├── profiles.yml
@@ -150,8 +150,6 @@ Todos os comandos do pipeline (`make topics`, `make produce`, etc.) rodam **dent
 
 ```bash
 make topics
-# ou
-python src/create_kafka_topics.py
 ```
 
 Cria 9 tópicos de dados + 9 DLQs e registra todos os schemas Avro no Schema Registry:
@@ -173,8 +171,6 @@ olist.raw.category_translation (1 partição — compact)
 Em um terminal separado:
 ```bash
 make stream
-# ou
-python src/stream_kafka_to_iceberg.py
 ```
 
 Inicia 9 streams paralelos (um por tópico). Checkpoints salvos em `s3a://spark-demo/stream-1/checkpoints/<tabela>`.
@@ -183,8 +179,6 @@ Inicia 9 streams paralelos (um por tópico). Checkpoints salvos em `s3a://spark-
 
 ```bash
 make produce
-# ou
-python src/producer_csv_kafka.py
 ```
 
 Saída esperada:
@@ -203,46 +197,59 @@ make dbt-run
 make dbt-test
 ```
 
-> Se o `dbt-run` falhar com `ICEBERG_COMMIT_ERROR` (schema dos marts mudou) ou `ICEBERG_MISSING_METADATA` (metadata corrompida/ausente no MinIO), execute `make reset-marts` antes de rodar novamente.
-
----
-
-## Reset de Tabelas
-
-| Comando | O que faz | Quando usar |
-|---|---|---|
-| `make reset-marts` | Remove entradas do Hive Metastore (via PostgreSQL) + arquivos do MinIO para `fct_orders`, `dim_customers`, `dim_sellers` | Tipo de coluna alterado no modelo (`ICEBERG_COMMIT_ERROR`) ou metadata corrompida (`ICEBERG_MISSING_METADATA`) |
-| `make reset-bronze` | Dropa todas as tabelas Bronze via Trino + checkpoints e dados do MinIO | Schema do Bronze mudou ou dados corrompidos |
-
-**Por que o `reset-marts` usa PostgreSQL diretamente?**
-
-O Trino não consegue executar `DROP TABLE` quando os arquivos de metadata Iceberg já foram removidos do MinIO — retorna `ICEBERG_MISSING_METADATA` em vez de limpar a entrada. O `reset-marts` contorna isso removendo as entradas diretamente do PostgreSQL (backend do Hive Metastore), respeitando todas as foreign keys, e depois limpa os arquivos restantes no MinIO. Funciona em qualquer estado: metadata presente, ausente ou parcialmente corrompida.
-
-Tabelas `__dbt_tmp` órfãs (criadas por runs interrompidos) também são removidas automaticamente.
-
-**Quando o reset NÃO é necessário:**
-
-Adicionar colunas novas ao modelo não requer reset — os marts usam `on_schema_change='append_new_columns'`, que adiciona colunas novas automaticamente no próximo `dbt run`. O reset só é necessário quando o **tipo** de uma coluna existente muda.
-
-> Após qualquer reset, rode `make dbt-run` para recriar as tabelas do zero.
+> Se o `dbt-run` falhar com `ICEBERG_COMMIT_ERROR` ou `ICEBERG_MISSING_METADATA`, execute `make reset-marts` antes de rodar novamente (ver seção Reset abaixo).
 
 ---
 
 ## Pipeline B — Batch Direto (Desenvolvimento / Reprocessamento)
 
 ```bash
-# Ingestão batch: CSV → Hive/Parquet (raw_olist.*)
+# Ingestão batch: CSV → Iceberg Raw (raw_olist.*)
 make ingest
 
-# Transformações dbt: staging + marts
-make dbt-run
+# Transformações dbt com fonte batch
+make dbt-run-batch
 
 # Testes de qualidade
-make dbt-test
+make dbt-test-batch
 
-# Ou tudo de uma vez:
+# Ou tudo de uma vez (ingest + dbt-run-batch + dbt-test-batch):
 make pipeline
 ```
+
+Os modelos staging alternam automaticamente a fonte de `iceberg_bronze.bronze_*` para `raw_olist.*` via `--vars '{pipeline: batch}'`, removendo dependências de `kafka_offset`/`ingestion_timestamp` que não existem nas tabelas batch.
+
+> **Atenção**: use sempre `make dbt-run-batch` (não `make dbt-run`) no Pipeline B. O `make dbt-run` não passa `--vars '{pipeline: batch}'` e vai tentar ler as tabelas Bronze que não existem nesse pipeline.
+
+> Se o `dbt-run-batch` falhar com `ICEBERG_COMMIT_ERROR` ou `ICEBERG_MISSING_METADATA`, execute `make reset-marts` antes de rodar novamente.
+
+---
+
+## Reset de Tabelas
+
+Cada pipeline tem seus próprios comandos de reset. Não misture — `reset-bronze` não afeta tabelas Raw e vice-versa.
+
+### Pipeline A — Streaming
+
+| Comando | O que remove | Quando usar |
+|---|---|---|
+| `make reset-bronze` | Tabelas Bronze (`raw_olist_staging.bronze_*`) + checkpoints no MinIO | Schema do Bronze mudou ou dados corrompidos. Após o reset rode `make stream` novamente |
+| `make reset-marts` | Tabelas Gold (`fct_orders`, `dim_customers`, `dim_sellers`) via PostgreSQL + MinIO | `ICEBERG_COMMIT_ERROR` (tipo de coluna mudou) ou `ICEBERG_MISSING_METADATA`. Após o reset rode `make dbt-run` |
+
+### Pipeline B — Batch
+
+| Comando | O que remove | Quando usar |
+|---|---|---|
+| `make reset-raw` | Tabelas Raw (`raw_olist.*`) via PostgreSQL + MinIO | Antes de reingerir (`make ingest`). Necessário se a ingestão anterior falhou no meio ou o schema mudou |
+| `make reset-marts` | Tabelas Gold (mesmas do Pipeline A) | Mesmas condições acima. Após o reset rode `make dbt-run-batch` |
+
+**Por que `reset-marts` e `reset-raw` usam PostgreSQL diretamente (não Trino)?**
+
+O Trino não consegue executar `DROP TABLE` quando os arquivos de metadata Iceberg já foram removidos do MinIO — retorna `ICEBERG_MISSING_METADATA`. Os scripts de reset contornam isso removendo as entradas diretamente do PostgreSQL (backend do Hive Metastore), respeitando todas as foreign keys, e depois limpam os arquivos restantes no MinIO. Funcionam em qualquer estado: metadata presente, ausente ou parcialmente corrompida.
+
+**Quando o reset NÃO é necessário:**
+
+Adicionar colunas novas ao modelo não requer reset — os marts usam `on_schema_change='append_new_columns'`, que adiciona colunas novas automaticamente no próximo run. O reset só é necessário quando o **tipo** de uma coluna existente muda.
 
 ---
 
