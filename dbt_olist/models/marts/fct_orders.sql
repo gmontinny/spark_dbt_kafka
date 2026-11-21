@@ -3,7 +3,7 @@
         materialized         = 'incremental',
         incremental_strategy = 'merge',
         unique_key           = 'order_id',
-        on_schema_change     = 'sync_all_columns',
+        on_schema_change     = 'append_new_columns',
         post_hook = [
             "ALTER TABLE {{ this }} EXECUTE optimize(file_size_threshold => '32MB')",
             "ALTER TABLE {{ this }} EXECUTE expire_snapshots(retention_threshold => '7d')"
@@ -31,15 +31,21 @@
     - expire_snapshots: remove snapshots Iceberg com mais de 7 dias
 */
 
+{% if is_incremental() %}
+WITH _watermark AS (
+    SELECT MAX(dbt_updated_at) - INTERVAL '3' DAY AS cutoff
+    FROM {{ this }}
+),
+
+orders AS (
+    SELECT * FROM {{ ref('stg_orders') }}
+    WHERE TRY_CAST(ingestion_timestamp AS TIMESTAMP) >= (SELECT cutoff FROM _watermark)
+),
+{% else %}
 WITH orders AS (
     SELECT * FROM {{ ref('stg_orders') }}
-    {% if is_incremental() %}
-        WHERE TRY_CAST(ingestion_timestamp AS TIMESTAMP) >= (
-            SELECT MAX(TRY_CAST(ingestion_timestamp AS TIMESTAMP)) - INTERVAL '3' DAY
-            FROM {{ this }}
-        )
-    {% endif %}
 ),
+{% endif %}
 
 payments_agg AS (
     SELECT

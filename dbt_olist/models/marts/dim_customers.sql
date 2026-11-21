@@ -3,7 +3,7 @@
         materialized         = 'incremental',
         incremental_strategy = 'merge',
         unique_key           = 'customer_unique_id',
-        on_schema_change     = 'sync_all_columns',
+        on_schema_change     = 'append_new_columns',
         post_hook = [
             "ALTER TABLE {{ this }} EXECUTE optimize(file_size_threshold => '32MB')"
         ]

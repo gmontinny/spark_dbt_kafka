@@ -341,11 +341,42 @@ Mensagem cosmética do gRPC — não afeta os streams. O cliente PySpark faz kee
 
 ---
 
-### `ICEBERG_COMMIT_ERROR: types incompatible` no `make dbt-run`
+### `NOT_SUPPORTED: Given correlated subquery is not supported` no `make dbt-run`
 
-Ocorre quando o schema de uma tabela Gold mudou (ex: tipo de coluna alterado) e o dbt tenta fazer `sync_all_columns` via ALTER — o Iceberg não permite mudança de tipo de coluna in-place.
+```
+TrinoUserError(type=USER_ERROR, name=NOT_SUPPORTED,
+  message="line 6:58: Given correlated subquery is not supported")
+```
 
-Solução:
+Ocorre quando a cláusula incremental do `fct_orders` usa `SELECT MAX(...) FROM {{ this }}` diretamente dentro de uma CTE — o Trino não suporta subquery não-correlacionada referenciando uma tabela externa dentro de um bloco `WITH`.
+
+Solução já aplicada em `fct_orders.sql`: o watermark foi extraido como primeira CTE separada no modo incremental, e a coluna de referência corrigida de `ingestion_timestamp` (que não existe em `fct_orders`) para `dbt_updated_at`:
+
+```sql
+{% if is_incremental() %}
+WITH _watermark AS (
+    SELECT MAX(dbt_updated_at) - INTERVAL '3' DAY AS cutoff
+    FROM {{ this }}
+),
+orders AS (
+    SELECT * FROM {{ ref('stg_orders') }}
+    WHERE TRY_CAST(ingestion_timestamp AS TIMESTAMP) >= (SELECT cutoff FROM _watermark)
+),
+{% else %}
+WITH orders AS (
+    SELECT * FROM {{ ref('stg_orders') }}
+),
+{% endif %}
+```
+
+---
+
+
+Ocorre quando o dbt tenta sincronizar o schema de uma tabela Gold existente via `ALTER TABLE DROP/ADD COLUMN` — o Iceberg não suporta mudança de tipo de coluna in-place.
+
+**Causa raiz permanente (já corrigida):** os três marts usavam `on_schema_change='sync_all_columns'`, que instrui o dbt a emitir ALTER para alinhar o schema da tabela ao modelo SQL. Trocado para `on_schema_change='append_new_columns'` em `fct_orders.sql`, `dim_sellers.sql` e `dim_customers.sql` — o dbt agora só adiciona colunas novas, nunca tenta alterar ou remover existentes.
+
+**Quando ainda pode ocorrer:** se o tipo de uma coluna existente for alterado no modelo SQL (ex: `DECIMAL(10,2)` → `DOUBLE`). Nesse caso, o reset é necessário:
 ```bash
 make reset-marts
 make dbt-run

@@ -211,7 +211,7 @@ make dbt-test
 
 | Comando | O que faz | Quando usar |
 |---|---|---|
-| `make reset-marts` | Remove entradas do Hive Metastore (via PostgreSQL) + arquivos do MinIO para `fct_orders`, `dim_customers`, `dim_sellers` | Schema dos marts mudou (`ICEBERG_COMMIT_ERROR`) ou metadata corrompida (`ICEBERG_MISSING_METADATA`) |
+| `make reset-marts` | Remove entradas do Hive Metastore (via PostgreSQL) + arquivos do MinIO para `fct_orders`, `dim_customers`, `dim_sellers` | Tipo de coluna alterado no modelo (`ICEBERG_COMMIT_ERROR`) ou metadata corrompida (`ICEBERG_MISSING_METADATA`) |
 | `make reset-bronze` | Dropa todas as tabelas Bronze via Trino + checkpoints e dados do MinIO | Schema do Bronze mudou ou dados corrompidos |
 
 **Por que o `reset-marts` usa PostgreSQL diretamente?**
@@ -219,6 +219,10 @@ make dbt-test
 O Trino não consegue executar `DROP TABLE` quando os arquivos de metadata Iceberg já foram removidos do MinIO — retorna `ICEBERG_MISSING_METADATA` em vez de limpar a entrada. O `reset-marts` contorna isso removendo as entradas diretamente do PostgreSQL (backend do Hive Metastore), respeitando todas as foreign keys, e depois limpa os arquivos restantes no MinIO. Funciona em qualquer estado: metadata presente, ausente ou parcialmente corrompida.
 
 Tabelas `__dbt_tmp` órfãs (criadas por runs interrompidos) também são removidas automaticamente.
+
+**Quando o reset NÃO é necessário:**
+
+Adicionar colunas novas ao modelo não requer reset — os marts usam `on_schema_change='append_new_columns'`, que adiciona colunas novas automaticamente no próximo `dbt run`. O reset só é necessário quando o **tipo** de uma coluna existente muda.
 
 > Após qualquer reset, rode `make dbt-run` para recriar as tabelas do zero.
 
