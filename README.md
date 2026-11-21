@@ -82,6 +82,7 @@ spark_dbt_kafka/
 │   ├── devcontainer.json
 │   └── Dockerfile
 ├── hive-metastore/                # Dockerfile + configuração do Hive Metastore
+├── minio-client/                  # Dockerfile com binário mc embutido
 ├── spark-connect/                 # Dockerfile + spark-defaults.conf
 ├── trino/catalog/                 # iceberg.properties + hive.properties
 ├── docker-compose.yml

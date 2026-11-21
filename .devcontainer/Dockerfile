@@ -28,8 +28,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 WORKDIR /workspace
 
 # Copia apenas os arquivos de manifesto para aproveitar o cache de camadas.
+# O README.md é necessário pelo hatchling (declarado em pyproject.toml).
 # O código-fonte é montado via volume no docker-compose, não copiado aqui.
-COPY pyproject.toml uv.lock* ./
+COPY pyproject.toml uv.lock* README.md ./
 
 # Cria o virtualenv e instala todas as dependências (prod + dev) declaradas
 # no pyproject.toml, incluindo o grupo "dev" (ruff, black, pytest, pre-commit).
