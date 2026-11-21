@@ -143,7 +143,7 @@ docker compose ps
 uv sync
 
 # Com pip
-pip install -r requirements.txt
+pip install -r requirements-pip.txt
 ```
 
 ---

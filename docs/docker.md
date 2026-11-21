@@ -72,6 +72,20 @@ O script executa:
 
 ---
 
+## Dependências Python
+
+```bash
+# Com uv (recomendado — usa uv.lock com hashes)
+uv sync
+
+# Com pip
+pip install -r requirements-pip.txt
+```
+
+> `requirements.txt` é gerado por `uv export --frozen` e contém hashes para reprodutibilidade no CI/container. O `pip` não consegue instalar pacotes editáveis (`-e .`) junto com hashes — use `requirements-pip.txt` para instalação com pip.
+
+---
+
 ## Variáveis de ambiente (`.env`)
 
 | Variável                  | Padrão                          | Descrição                                              |
