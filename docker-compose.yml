@@ -1,0 +1,339 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # Apache Kafka 8.x — modo KRaft (sem ZooKeeper)
+  #
+  # KRaft elimina o ZooKeeper como dependência externa: o próprio broker
+  # gerencia os metadados do cluster via Raft consensus, reduzindo latência
+  # de eleição de líder e simplificando a operação.
+  #
+  # Listeners:
+  #   INTERNAL://kafka:9093  — comunicação entre serviços Docker (broker ↔ clientes internos)
+  #   EXTERNAL://0.0.0.0:9092 — acesso do host (scripts locais, ferramentas de dev)
+  #   CONTROLLER://kafka:9094 — canal exclusivo do protocolo Raft (metadados do cluster)
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:8.0.0
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"   # acesso externo (host → container)
+    expose:
+      - "9093"        # acesso interno (serviços Docker)
+      - "9094"        # controller Raft (interno)
+    environment:
+      # --- Identidade do nó ---
+      KAFKA_NODE_ID: 1
+      # Nó atua como broker E controller (topologia single-node)
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9094"
+
+      # --- Listeners ---
+      KAFKA_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://0.0.0.0:9092,CONTROLLER://kafka:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # --- Replicação e confiabilidade ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Garante que o produtor com acks=all receba confirmação de ao menos 1 réplica
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+
+      # --- Performance e batching ---
+      # Acumula até 64 KB ou 5 ms antes de gravar no log (reduz IOPS)
+      KAFKA_LOG_FLUSH_INTERVAL_MESSAGES: 10000
+      KAFKA_LOG_FLUSH_INTERVAL_MS: 1000
+
+      # --- Retenção padrão dos tópicos (sobrescrita por tópico no create_kafka_topics.py) ---
+      KAFKA_LOG_RETENTION_HOURS: 168        # 7 dias
+      KAFKA_LOG_RETENTION_BYTES: -1         # sem limite por tamanho
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824   # segmentos de 1 GB
+
+      # --- KRaft: ID único do cluster (gerado uma vez, fixo) ---
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qg"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:9093", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - spark_network
+
+  # ---------------------------------------------------------------------------
+  # Schema Registry — conecta via bootstrap ao Kafka KRaft (sem ZooKeeper)
+  # ---------------------------------------------------------------------------
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.0.0
+    container_name: schema-registry
+    hostname: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      # KRaft: conecta diretamente ao broker, sem ZooKeeper
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: INTERNAL://kafka:9093
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: PLAINTEXT
+      SCHEMA_REGISTRY_DEBUG: "false"
+    networks:
+      - spark_network
+
+  starrocks-fe-0:
+    image: starrocks/fe-ubuntu:latest
+    hostname: starrocks-fe-0
+    container_name: starrocks-fe-0
+    command:
+      - /bin/bash
+      - -c
+      - |
+        /opt/starrocks/fe_entrypoint.sh starrocks-fe-0
+    environment:
+      - HOST_TYPE=FQDN
+      - TZ=Asia/Shanghai
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}
+    ports:
+      - "8030:8030"
+      - "9020:9020"
+      - "9030:9030"
+    volumes:
+       - singleton_fe0_data:/opt/starrocks/fe/meta
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9030"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - spark_network
+
+  starrocks-be-0:
+    image: starrocks/be-ubuntu:latest
+    hostname: starrocks-be-0
+    container_name: starrocks-be-0
+    command:
+      - /bin/bash
+      - -c
+      - |
+        /opt/starrocks/be_entrypoint.sh starrocks-fe-0
+    environment:
+      - HOST_TYPE=FQDN
+      - TZ=Asia/Shanghai
+    ports:
+      - "8040:8040"
+    depends_on:
+      - starrocks-fe-0
+    volumes:
+      - singleton_be0_data:/opt/starrocks/be/storage
+    networks:
+      - spark_network
+
+  minio:
+    container_name: minio
+    image: quay.io/minio/minio
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - './minio_data:/data'
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+      - MINIO_DOMAIN=storage
+      - MINIO_REGION_NAME=${MINIO_REGION}
+      - MINIO_REGION=${MINIO_REGION}
+    command: server --console-address ":9001" /data
+    networks:
+      - spark_network
+
+  minio-client:
+    image: minio/mc:latest
+    container_name: minio-client
+    depends_on:
+      - minio
+    environment:
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+    entrypoint: >
+      /bin/sh -c "
+      until (mc alias set myminio http://minio:9000 $MINIO_ACCESS_KEY $MINIO_SECRET_KEY); do echo 'waiting for minio...'; sleep 3; done;
+      mc mb --ignore-existing myminio/spark-demo/stream-1/checkpoints;
+      mc mb --ignore-existing myminio/warehouse;
+      "
+    networks:
+      - spark_network
+
+  superset:
+    image: apache/superset:latest
+    container_name: superset
+    ports:
+      - "8088:8088"
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY}
+      - SUPERSET_DATABASE_URI=sqlite:////app/superset_home/superset.db
+    volumes:
+      - superset_home:/app/superset_home
+      - ./superset_config.py:/app/pythonpath/superset_config.py
+    command: >
+      /bin/sh -c "superset db upgrade &&
+      superset fab create-admin --username admin --firstname Superset --lastname Admin --password ${SUPERSET_ADMIN_PASSWORD} --email admin@superset.com &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger"
+    restart: unless-stopped
+    networks:
+      - spark_network
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - spark_network
+
+  hive-metastore:
+    build: ./hive-metastore
+    container_name: hive-metastore
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+        -Djavax.jdo.option.ConnectionUserName=${POSTGRES_USER}
+        -Djavax.jdo.option.ConnectionPassword=${POSTGRES_PASSWORD}
+    ports:
+      - "9083:9083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9083"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - spark_network
+
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    ports:
+      - "${TRINO_PORT}:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+    networks:
+      - spark_network
+
+  spark-connect:
+    build: ./spark-connect
+    container_name: spark-connect
+    command:
+      - /opt/spark/sbin/start-connect-server.sh
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1,org.apache.hadoop:hadoop-aws:3.3.6,com.amazonaws:aws-java-sdk-bundle:1.12.262,com.mysql:mysql-connector-j:8.0.33
+      - --conf
+      - spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+      - --conf
+      - spark.hadoop.fs.s3a.access.key=${MINIO_ACCESS_KEY}
+      - --conf
+      - spark.hadoop.fs.s3a.secret.key=${MINIO_SECRET_KEY}
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    ports:
+      - "15002:15002"
+      - "4040-4045:4040-4045"
+    volumes:
+      - ./data:/opt/spark/work-dir/data
+      - spark-warehouse:/opt/spark/warehouse
+      - spark-checkpoints:/tmp/spark-checkpoints
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_started
+      minio:
+        condition: service_started
+    networks:
+      - spark_network
+
+  # -----------------------------------------------------------------------
+  # Serviço de desenvolvimento — usado pelo Dev Container (VS Code / JetBrains)
+  # Contém Python, uv, todas as dependências do pyproject.toml e as ferramentas
+  # de dev (ruff, black, pytest, pre-commit). O código-fonte é montado em
+  # /workspace para que edições locais reflitam imediatamente no container.
+  # -----------------------------------------------------------------------
+  dev:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    container_name: dev
+    volumes:
+      - .:/workspace:cached
+      - uv-cache:/root/.cache/uv
+    working_dir: /workspace
+    env_file:
+      - .env
+    environment:
+      # Aponta para os serviços internos da rede Docker
+      - KAFKA_BROKERS=${KAFKA_BROKERS}
+      - SPARK_CONNECT_URL=${SPARK_CONNECT_URL}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - TRINO_HOST=${TRINO_HOST}
+      - TRINO_PORT=${TRINO_PORT}
+      - CSV_DIR=${CSV_DIR}
+      - DATA_DIR=${DATA_DIR}
+    # Mantém o container vivo para o Dev Container se conectar
+    command: sleep infinity
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      trino:
+        condition: service_started
+    networks:
+      - spark_network
+
+
+networks:
+  spark_network:
+    driver: bridge
+    external: false
+
+volumes:
+  singleton_fe0_data:
+  singleton_be0_data:
+  superset_home:
+  uv-cache:
+  spark-warehouse:
+  spark-checkpoints:
+  conf:
+  postgres_data:

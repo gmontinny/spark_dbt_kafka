@@ -1,0 +1,158 @@
+version: 2
+
+sources:
+
+  # ---------------------------------------------------------------------------
+  # Fonte Bronze — tabelas Iceberg geradas pelo streaming Kafka → Spark
+  # Caminho: Kafka → stream_kafka_to_iceberg.py → raw_olist_staging.bronze_*
+  # Contém metadados de ingestão: kafka_offset, kafka_timestamp, ingestion_timestamp
+  # ---------------------------------------------------------------------------
+  - name: iceberg_bronze
+    description: "Tabelas Iceberg brutas geradas pela ingestão contínua via Spark Structured Streaming."
+    database: iceberg
+    schema: raw_olist_staging
+    freshness:
+      warn_after: {count: 6, period: hour}
+      error_after: {count: 24, period: hour}
+    loaded_at_field: ingestion_timestamp
+    tables:
+      - name: bronze_orders
+        description: "Pedidos brutos ingeridos do Kafka com metadados de offset e timestamp."
+        columns:
+          - name: order_id
+            description: "Chave de negócio do pedido (chave de partição Kafka)."
+          - name: kafka_offset
+            description: "Offset da mensagem no tópico Kafka — usado para deduplicação."
+          - name: kafka_timestamp
+            description: "Timestamp de produção da mensagem no broker Kafka."
+          - name: ingestion_timestamp
+            description: "Timestamp de gravação pelo Spark (controle de freshness)."
+
+      - name: bronze_customers
+        description: "Clientes brutos ingeridos do Kafka."
+        columns:
+          - name: customer_id
+            description: "Chave de negócio do cliente."
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_order_items
+        description: "Itens de pedido brutos ingeridos do Kafka."
+        columns:
+          - name: order_id
+          - name: order_item_id
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_order_payments
+        description: "Pagamentos brutos ingeridos do Kafka."
+        columns:
+          - name: order_id
+          - name: payment_sequential
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_order_reviews
+        description: "Avaliações brutas ingeridas do Kafka."
+        columns:
+          - name: review_id
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_products
+        description: "Produtos brutos ingeridos do Kafka."
+        columns:
+          - name: product_id
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_sellers
+        description: "Vendedores brutos ingeridos do Kafka."
+        columns:
+          - name: seller_id
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_geolocation
+        description: "Geolocalização bruta ingerida do Kafka."
+        columns:
+          - name: geolocation_zip_code_prefix
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+      - name: bronze_category_translation
+        description: "Tradução de categorias bruta ingerida do Kafka."
+        columns:
+          - name: product_category_name
+          - name: kafka_offset
+          - name: ingestion_timestamp
+
+  # ---------------------------------------------------------------------------
+  # Fonte Raw — tabelas Parquet/Hive geradas pela ingestão batch
+  # Caminho: CSV → ingest_csv_to_raw.py → raw_olist.*
+  # Usada no Pipeline B (desenvolvimento / reprocessamento sem Kafka)
+  # ---------------------------------------------------------------------------
+  - name: raw_olist
+    description: "Tabelas Parquet brutas geradas pela ingestão batch via Spark (Pipeline B)."
+    database: hive
+    schema: raw_olist
+    tables:
+      - name: orders
+        description: "Pedidos — ingestão batch."
+        columns:
+          - name: order_id
+          - name: customer_id
+          - name: order_status
+          - name: order_purchase_timestamp
+
+      - name: customers
+        description: "Clientes — ingestão batch."
+        columns:
+          - name: customer_id
+          - name: customer_unique_id
+          - name: customer_state
+
+      - name: order_items
+        description: "Itens de pedido — ingestão batch."
+        columns:
+          - name: order_id
+          - name: order_item_id
+          - name: product_id
+          - name: price
+          - name: freight_value
+
+      - name: order_payments
+        description: "Pagamentos — ingestão batch."
+        columns:
+          - name: order_id
+          - name: payment_sequential
+          - name: payment_type
+          - name: payment_value
+
+      - name: order_reviews
+        description: "Avaliações — ingestão batch."
+        columns:
+          - name: review_id
+          - name: order_id
+          - name: review_score
+
+      - name: products
+        description: "Produtos — ingestão batch."
+        columns:
+          - name: product_id
+          - name: product_category_name
+
+      - name: sellers
+        description: "Vendedores — ingestão batch."
+        columns:
+          - name: seller_id
+          - name: seller_state
+
+      - name: geolocation
+        description: "Geolocalização — ingestão batch."
+
+      - name: product_category_name_translation
+        description: "Tradução de categorias — ingestão batch."
+        columns:
+          - name: product_category_name
+          - name: product_category_name_english

@@ -1,0 +1,17 @@
+dbt_olist:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      method: none
+      user: dbt_user
+      host: localhost
+      port: 8080
+      # Catálogo Iceberg: necessário para incremental_strategy='merge' e table_properties
+      # O catálogo 'hive' não suporta merge nativo — apenas o conector Iceberg do Trino suporta
+      database: iceberg
+      schema: raw_olist_staging
+      threads: 4
+      session_properties:
+        query_max_run_time: 15m
+        join_distribution_type: AUTOMATIC

@@ -1,0 +1,93 @@
+{
+  "name": "olist-lakehouse-dev",
+
+  // Usa o docker-compose.yml da raiz do projeto.
+  // O Dev Container se conecta ao serviço "dev" e sobe todos os serviços
+  // de infraestrutura necessários para o pipeline.
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "dev",
+  "runServices": [
+    "zookeeper",
+    "kafka",
+    "schema-registry",
+    "minio",
+    "minio-client",
+    "postgres",
+    "hive-metastore",
+    "trino",
+    "spark-connect",
+    "superset"
+  ],
+
+  // Pasta aberta no editor ao entrar no container
+  "workspaceFolder": "/workspace",
+
+  // Não sobrescreve o CMD do container (que é "sleep infinity")
+  "overrideCommand": false,
+
+  // Carrega as variáveis de ambiente do .env para o terminal do container
+  "envFile": "../.env",
+
+  // Após a criação do container:
+  // 1. uv sync garante que o .venv está atualizado com o pyproject.toml
+  // 2. pre-commit install registra os hooks de qualidade de código
+  "postCreateCommand": "uv sync --frozen --all-groups && uv run pre-commit install",
+
+  // Monta o cache do uv como volume nomeado para acelerar rebuilds
+  "mounts": [
+    "source=uv-cache,target=/root/.cache/uv,type=volume"
+  ],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Python
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        // Qualidade de código
+        "charliermarsh.ruff",
+        "ms-python.black-formatter",
+        // Notebooks
+        "ms-toolsai.jupyter",
+        // dbt
+        "innoverio.vscode-dbt-power-user",
+        // Docker / Compose
+        "ms-azuretools.vscode-docker",
+        // YAML / TOML
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        // SQL
+        "mtxr.sqltools",
+        // Amazon Q
+        "amazonwebservices.amazon-q-vscode"
+      ],
+      "settings": {
+        // Aponta para o .venv criado pelo uv dentro do workspace
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "python.analysis.typeCheckingMode": "basic",
+        // Ruff como linter e formatter padrão
+        "ruff.enable": true,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+          }
+        },
+        // Pytest
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        // Terminal ativa o venv automaticamente
+        "python.terminal.activateEnvironment": true,
+        // dbt Power User
+        "dbt.dbtPythonPathOverride": "/workspace/.venv/bin/python"
+      }
+    },
+
+    "jetbrains": {
+      "ide": "pycharm"
+    }
+  }
+}
